@@ -1,0 +1,15 @@
+# Chrome user data (temporary)
+chrome_user_data/
+*.user-data
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# OS
+.DS_Store
+
+# Secrets (should never be committed)
+*.env
+credentials.json

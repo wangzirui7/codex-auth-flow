@@ -1,59 +1,205 @@
 # Codex CLI OAuth Device Auth — Automated Chrome Login
 
 > Automate Codex CLI OAuth login using Chrome DevTools Protocol (CDP) via computer use,
-> no manual browser interaction required after the OAuth device flow starts.
+> no manual browser interaction needed after the OAuth device flow starts.
 
-## Overview
+## TL;DR
 
-When you run `codex login --device-auth`, the Codex CLI opens a device auth URL and waits
-for OAuth completion. Traditionally, you must manually open that URL in a browser, enter
-credentials, approve MFA, and pick a workspace — the browser is controlled by a human.
+```bash
+# 1. Install deps
+pip3 install websockets
 
-This project automates that entire browser flow using CDP (Chrome DevTools Protocol) from
-a separate Chrome instance. The CDP approach works even when the browser profile is sandboxed
-from AX accessibility APIs.
+# 2. Setup Chrome + Codex
+bash scripts/setup.sh
+
+# 3. Run automation (in a new terminal)
+python3 scripts/login_via_chrome_cdp.py --page-id "$(curl -s http://127.0.0.1:9222/json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')"
+
+# 4. Approve MFA on your phone
+
+# 5. Done
+codex login status  # → "Logged in using ChatGPT" ✅
+```
+
+## Full Walkthrough
+
+### Step 1 — Install Python dependency
+
+```bash
+pip3 install websockets
+```
+
+### Step 2 — Run the setup script
+
+```bash
+bash scripts/setup.sh
+```
+
+This script:
+- Verifies Chrome + Codex CLI are installed
+- Kills any Chrome already on port 9222
+- Launches a **fresh Chrome** at `http://127.0.0.1:9222` with remote debugging enabled
+- Opens one `about:blank` tab (which the automation will control)
+- Prints your `PAGE_ID` (you'll need it for step 4)
+- Shows the `codex login --device-auth` command to run in another terminal
+
+**Sample output:**
+```
+============================================
+  Codex CLI OAuth — Automated Setup
+============================================
+
+[1/5] Checking prerequisites...
+  ✅ Chrome found
+  ✅ Codex CLI found
+  ✅ Python websockets available
+
+[2/5] Cleaning up existing Chrome instances...
+  ✅ Port 9222 is free
+
+[3/5] Launching fresh Chrome with remote debugging...
+  Chrome launching (waiting 10s for full startup)...
+  ✅ Chrome running on port 9222
+  📄 Page ID: 0FAF5FBAF6F1FE7B7D50F27B0365F58D
+  🔗 Page URL: about:blank
+
+[4/5] Starting Codex device auth flow...
+  To complete auth manually (optional):
+  → Visit: https://auth.openai.com/codex/device
+  → Enter the code shown by: codex login --device-auth
+
+  Alternatively, run the automation script:
+  python3 scripts/login_via_chrome_cdp.py --page-id 0FAF5FBAF6F1FE7B7D50F27B0365F58D
+```
+
+### Step 3 — Start Codex device auth
+
+In a **second terminal**:
+
+```bash
+codex login --device-auth
+```
+
+You'll see output like:
+```
+To authenticate, visit:
+  https://auth.openai.com/codex/device
+and enter the code: QRST-ABCD
+Waiting for authentication...
+```
+
+Keep this terminal running — Codex is listening for the OAuth callback.
+
+### Step 4 — Run the automation script
+
+In a **third terminal** (or reuse the setup terminal after step 2):
+
+```bash
+# Get the PAGE_ID from the Chrome we just started
+PAGE_ID=$(curl -s http://127.0.0.1:9222/json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
+echo "Page ID: $PAGE_ID"
+
+# Run the automation
+python3 scripts/login_via_chrome_cdp.py --page-id "$PAGE_ID"
+```
+
+The script will print its progress as it goes:
+
+```
+Connecting to Chrome CDP: ws://127.0.0.1:9222/devtools/page/0FAF5FBAF6F1FE7B7D50F27B0365F58D
+Connected to Chrome.
+STEP 1 — Navigate to device auth page...
+  URL: https://auth.openai.com/codex/device
+STEP 2 — Email page: type email and continue...
+  Email input at (600, 224)
+  Clicking '继续' at (600, 300)
+  Waiting for password page...
+  Password page detected: https://auth.openai.com/log-in/password
+STEP 3 — Password page: type password and continue...
+  Password input at (586, 288)
+  Waiting for MFA approval page...
+  MFA page detected: https://auth.openai.com/push-auth-verification/...
+```
+
+### Step 5 — Approve MFA
+
+When you see this message from the script:
+
+```
+============================================================
+  MFA REQUIRED — Please approve the push notification
+  on your ChatGPT iOS/Android app or device.
+  (Waiting up to 90 seconds...)
+============================================================
+```
+
+Open the **ChatGPT app** on your iPhone/iPad and tap **Approve** (or tap the notification).
+
+Once approved, the script automatically continues to the workspace selection page and clicks through.
+
+### Step 6 — Verify
+
+```bash
+codex login status
+# → Logged in using ChatGPT  ✅
+```
 
 ## Architecture
 
 ```
-codex login --device-auth
-        │
-        ▼
-┌─────────────────────────┐     ┌──────────────────────────────┐
-│  Codex CLI              │     │  Fresh Chrome (isolated      │
-│  • fetches device code  │     │  --user-data-dir=/tmp/...)   │
-│  • listens on localhost  │     │                              │
-│    :1455/success        │     │  CDP WS at :9222             │
-└─────────────────────────┘     │  • navigates OAuth URL        │
-        │                       │  • types credentials via CDP   │
-        │  auth.openai.com/    │  • clicks buttons via CDP      │
-        │    codex/device      │                              │
-        │ (Device Auth Flow)   │  [MFA must be approved by     │
-        │                      │   human on their device]       │
-        │◄─── redirect ────────┤                              │
-        │  localhost:1455       │                              │
-        │  /success?id_token=..│                              │
-        ▼                       └──────────────────────────────┘
-Codex CLI receives token → "Logged in using ChatGPT" ✅
+┌──────────────────────────────────────────────────────────────┐
+│  Terminal 1: scripts/setup.sh                               │
+│  Fresh Chrome, CDP at ws://127.0.0.1:9222                     │
+│  (One blank tab waiting)                                      │
+└──────────────────────────────────────────────────────────────┘
+                              ↕ CDP (WebSocket)
+┌──────────────────────────────────────────────────────────────┐
+│  Terminal 2: python3 scripts/login_via_chrome_cdp.py         │
+│  Controls Chrome via CDP:                                    │
+│    • Navigates to OAuth URL                                   │
+│    • Types credentials (CDP Input.dispatchKeyEvent)          │
+│    • Clicks buttons (JS el.click())                          │
+│    • Detects page transitions (window.location.href poll)     │
+└──────────────────────────────────────────────────────────────┘
+                              ↕
+┌──────────────────────────────────────────────────────────────┐
+│  Terminal 3: codex login --device-auth                       │
+│  Codex CLI listens at localhost:1455/success                 │
+└──────────────────────────────────────────────────────────────┘
+                              ↕ OAuth Device Flow
+┌──────────────────────────────────────────────────────────────┐
+│  auth.openai.com                                             │
+│    Step 1: Email → Continue                                   │
+│    Step 2: Password → Continue                               │
+│    Step 3: MFA push → (human approves on phone)              │
+│    Step 4: Workspace selection                               │
+│    Step 5: Redirects to localhost:1455/success?id_token=...   │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## Prerequisites
+## Why CDP instead of AX / osascript?
 
-- **macOS** (Linux should work with minor path adjustments)
-- **Google Chrome** installed
-- **Codex CLI** installed (`brew install openai-codex` or from OpenAI)
-- **Python 3.9+** with `websockets` package (`pip install websockets`)
+The Chrome profile used by OpenAI's web OAuth is **sandboxed from macOS
+Accessibility APIs**. When you inspect such a tab with `get_window_state` (AX),
+the tree only shows empty MenuBar items — no web content, no inputs, no buttons.
 
-## Quick Start
+```
+AX accessibility tree (sandboxed web content):
+  - AXApplication "Chrome"
+      - [0] AXMenuBar ...
+      - [1] AXMenuBar ...
+      ... (only MenuBar items, no web content)
+```
 
-### Step 1 — Launch Chrome with CDP
+**CDP (Chrome DevTools Protocol)** connects directly to the browser's built-in
+debugger interface and bypasses the AX sandbox entirely. It gives you full DOM access
+even to cross-origin web content.
+
+## Key Technical Details
+
+### 1. Isolated Chrome Profile
 
 ```bash
-# Kill any existing Chrome on port 9222 to avoid conflicts
-pkill -f "Google Chrome" 2>/dev/null || true
-sleep 2
-
-# Launch fresh Chrome with remote debugging
 rm -rf /tmp/chrome_codex_fresh
 mkdir -p /tmp/chrome_codex_fresh
 
@@ -66,182 +212,147 @@ open -na "Google Chrome" --args \
   "about:blank"
 ```
 
-Wait ~10 seconds for Chrome to fully start, then verify:
+The `--user-data-dir=/tmp/...` flag gives us a clean, isolated Chrome profile
+with no existing session cookies. This avoids conflicts with any existing
+OpenAI/ChatGPT sessions and prevents the OAuth flow from accidentally logging
+you into the wrong account.
 
-```bash
-curl -s http://127.0.0.1:9222/json | python3 -c "
-import json,sys
-pages = [p for p in json.load(sys.stdin) if p['type']=='page']
-for p in pages:
-    print(p['id'], p['url'])
-"
-```
-
-You should see a page with `"url": "about:blank"`.
-
-### Step 2 — Start Codex Device Auth
-
-In a **separate terminal**, run:
-
-```bash
-codex login --device-auth
-```
-
-Codex will output something like:
-
-```
-To authenticate, visit:
-  https://auth.openai.com/codex/device
-and enter the code: XXXX-XXXX
-Waiting for authentication...
-```
-
-### Step 3 — Run the Automation Script
-
-In yet another terminal (or the same one after Codex is waiting),
-get the page ID for the `about:blank` tab:
-
-```bash
-PAGE_ID=$(curl -s http://127.0.0.1:9222/json | python3 -c "
-import json,sys
-pages = [p for p in json.load(sys.stdin) if p['type']=='page']
-print(pages[0]['id'] if pages else '')
-")
-echo "Page ID: $PAGE_ID"
-```
-
-Then run the automation script (from this repo):
-
-```bash
-python3 scripts/login_via_chrome_cdp.py --page-id "$PAGE_ID"
-```
-
-The script will:
-1. Navigate to `auth.openai.com/codex/device`
-2. Wait for the email input field
-3. Type the email address
-4. Click **Continue**
-5. Type the password
-6. Click **Continue**
-6. Wait for the MFA approval push (you must approve on your phone/device)
-7. After MFA, it detects the workspace selection page
-8. Clicks the desired workspace radio button
-9. Clicks **Continue**
-
-### Step 4 — Verify
-
-Once done, check Codex:
-
-```bash
-codex login status
-# → "Logged in using ChatGPT" ✅
-```
-
-## The Script (`scripts/login_via_chrome_cdp.py`)
-
-The script is self-contained. Key techniques:
-
-### Why CDP over AX / Computer Use?
-
-The OX Chrome profile used by Codex/ChatGPT web is **sandboxed from macOS
-Accessibility APIs**. When you inspect such a Chrome tab with `get_window_state`,
-the AX tree only shows MenuBar items — no web content, no inputs, no buttons.
-
-**CDP (Chrome DevTools Protocol)** connects directly to the browser's internal
-debugger interface, giving full DOM access regardless of AX sandboxing.
-
-### DOM Injection via `Runtime.evaluate`
+### 2. CDP WebSocket Connection
 
 ```python
-# Focus an element
-await ws.send(json.dumps({
-    'id': n, 'method': 'Runtime.evaluate',
-    'params': {'expression': "document.querySelector('#email-input-id').focus()"}
-}))
+from websockets.asyncio.client import connect
 
-# Click a button
-await ws.send(json.dumps({
-    'id': n, 'method': 'Runtime.evaluate',
-    'params': {'expression': """
-        (function(){
-            var btn = [...document.querySelectorAll('button')]
-                .find(e => e.innerText.trim() === 'Continue');
-            btn.scrollIntoView({behavior:'instant',block:'center'});
-            btn.click();
-        })()
-    """}
-}))
+ws_url = f"ws://127.0.0.1:9222/devtools/page/{PAGE_ID}"
+async with connect(ws_url, max_size=15 * 1024 * 1024) as ws:
+    # Send CDP commands and read responses
+    await ws.send(json.dumps({"id": 1, "method": "Page.navigate",
+                               "params": {"url": "https://..."}}))
+    resp = await ws.recv()
 ```
 
-### Human-Like Keystroke Timing
+### 3. DOM Manipulation via `Runtime.evaluate`
 
-Character-by-character typing with ~50ms delays avoids triggering anti-bot
-rate limits on credential fields:
+Clicking buttons via JS avoids the AX sandbox entirely:
 
 ```python
-for c in email:
+async def click_button(ws, text: str):
+    expr = f"""
+    (function() {{
+        var btn = [...document.querySelectorAll('button')]
+            .find(e => e.innerText.trim() === '{text}' && !e.disabled);
+        if (!btn) return 'NOT FOUND';
+        btn.scrollIntoView({{behavior: 'instant', block: 'center'}});
+        btn.click();
+        return 'clicked';
+    }})()
+    """
+    await eval_js(ws, expr)
+```
+
+### 4. Character-by-Character Typing
+
+Typing credentials character-by-character with small delays mimics human typing
+and avoids triggering anti-bot rate limits that can appear with instant bulk inserts:
+
+```python
+for c in text:
     await ws.send(json.dumps({
-        'id': 2, 'method': 'Input.dispatchKeyEvent',
-        'params': {'type': 'keyDown', 'text': c, 'key': c}
+        "id": 2, "method": "Input.dispatchKeyEvent",
+        "params": {"type": "keyDown", "text": c, "key": c}
     }))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.04)
     await ws.send(json.dumps({
-        'id': 3, 'method': 'Input.dispatchKeyEvent',
-        'params': {'type': 'keyUp', 'key': c}
+        "id": 3, "method": "Input.dispatchKeyEvent",
+        "params": {"type": "keyUp", "key": c}
     }))
-    await asyncio.sleep(0.05)
-    await ws.recv()
+    await asyncio.sleep(0.04)
+    await ws.recv()  # drain response
 ```
 
-### Detecting Page Transitions
+### 5. Page Transition Detection
 
-After each form submission, poll the URL to detect navigation:
+After clicking a form's submit button, the CDP connection may close because
+the page unloads. We handle this by polling the URL via `curl` after a brief wait:
 
 ```python
-await ws.send(json.dumps({
-    'id': n, 'method': 'Runtime.evaluate',
-    'params': {'expression': 'window.location.href'}
-}))
-resp = await asyncio.wait_for(ws.recv(), timeout=15)
-url = json.loads(resp)['result']['result']['value']
-# e.g. ".../password" after email submit
+for _ in range(20):
+    await asyncio.sleep(2)
+    url = await eval_js(ws, 'window.location.href')
+    if "password" in url:
+        print("Password page detected!")
+        break
+else:
+    print(f"Current URL: {url}")
 ```
-
-## MFA Note
-
-The OAuth flow sends a push notification to all devices logged into your
-ChatGPT account (iOS/Android app). **You must manually approve** the MFA request
-on your phone or tablet. The script cannot bypass this — it's a security measure
-by OpenAI.
-
-The script will print a message and wait when it detects the MFA page. Once you
-approve, it automatically continues.
 
 ## Troubleshooting
 
-### "Chrome didn't start with remote debugging"
+### "Chrome didn't start with remote debugging on port 9222"
 
-Make sure no Chrome instance is already listening on port 9222, or use a different
-port and update the script's `CDP_URL`.
+```bash
+# Check what's on port 9222
+lsof -i :9222
+
+# Kill it and restart
+pkill -f "remote-debugging-port=9222" 2>/dev/null
+sleep 3
+# Then re-run setup.sh
+```
 
 ### "osascript timed out" when running CDP JS
 
-This usually means Chrome is showing a permission dialog ("Allow JavaScript from
-Apple Events"). A fresh `--user-data-dir` avoids this. Restart Chrome as shown
-in Step 1.
+This happens when Chrome shows a "Allow JavaScript from Apple Events"
+permission dialog. A fresh `--user-data-dir` avoids this. Restart Chrome
+per Step 2 of the setup.
 
 ### Script hangs at MFA page
 
-The MFA push may take 10-30 seconds to arrive on your device. The script waits
-up to 60 seconds. If you miss it, click **"重新发送提示"** (Resend) or use
-**"试试电子邮件"** (Try email) and enter the code manually.
+The push notification can take 10-30 seconds to arrive. The script waits
+up to 90 seconds. If it doesn't arrive:
+- On the MFA page, click **"重新发送提示"** (Resend)
+- Or click **"试试电子邮件"** (Try email) to use an email code instead
+- The script will detect the page transition automatically after you proceed
 
-### CDP WebSocket disconnects after navigation
+### CDP WebSocket disconnects
 
-`Runtime.evaluate` calls that trigger navigation (like `btn.click()`) can cause
-the CDP connection to close because the page unloads. The script handles this
-by waiting a few seconds and re-connecting to check the new URL via `curl`.
+Some CDP calls (like `btn.click()` that triggers navigation) can cause the
+WebSocket to close because the page unloads. The script handles this by:
+1. Checking URL immediately after click via `curl`
+2. Reconnecting if needed
+
+### Wrong workspace selected
+
+If your account has multiple workspaces and the script picks the wrong one,
+after the script completes you can switch workspaces manually:
+```bash
+# Log out and re-run the flow
+codex logout
+codex login --device-auth
+# Then re-run the automation script
+```
+
+Or modify the script to target a specific workspace index (see comments in
+`scripts/login_via_chrome_cdp.py` around line "STEP 4 — Workspace selection").
+
+## Project Structure
+
+```
+codex-auth-flow/
+├── README.md              # This file
+├── requirements.txt       # Python deps (websockets)
+├── .gitignore
+└── scripts/
+    ├── setup.sh           # Automated Chrome + Codex setup (run once)
+    └── login_via_chrome_cdp.py   # Main automation script
+```
+
+## Requirements
+
+- **macOS** (Linux compatible with minor path adjustments)
+- **Google Chrome** installed at `/Applications/Google Chrome.app`
+- **Codex CLI** installed (`brew install openai-codex` on macOS)
+- **Python 3.9+** with `websockets` package
 
 ## License
 
-MIT
+MIT — do whatever you want with it.
